@@ -32,6 +32,44 @@ use crate::sys::SDL_EventFilter;
 use crate::sys::SDL_EventType;
 use crate::video::Orientation;
 
+pub struct CustomEventStorage<T> {
+    cur_obj_id: usize,
+    objs: HashMap<usize, T>,
+}
+
+impl<T> CustomEventStorage<T> {
+    pub fn new() -> CustomEventStorage<T> {
+        let objs = HashMap::new();
+
+        CustomEventStorage {
+            cur_obj_id: 0,
+            objs,
+        }
+    }
+
+    fn add_event(&mut self, event: T) -> usize {
+        let obj_id = self.cur_obj_id;
+        self.cur_obj_id += 1;
+        self.objs.insert(obj_id, event);
+        obj_id
+    }
+
+    fn remove_event(&mut self, event_obj_id: usize) -> Option<T> {
+        self.objs.remove(&event_obj_id)
+    }
+
+    fn peek_event(&self, event_obj_id: usize) -> Option<&T> {
+        self.objs.get(&event_obj_id)
+    }
+}
+
+impl<T> Drop for CustomEventStorage<T> {
+    fn drop(&mut self) {
+        /* Detect leaks */
+        assert_eq!(self.objs.len(), 0);
+    }
+}
+
 struct CustomEventTypeMaps {
     sdl_id_to_type_id: HashMap<u32, ::std::any::TypeId>,
     type_id_to_sdl_id: HashMap<::std::any::TypeId, u32>,
@@ -222,8 +260,8 @@ impl crate::EventSubsystem {
     ///     assert_eq!(e2.a, 42);
     /// }
     /// ```
-    pub fn push_custom_event<T: ::std::any::Any>(&self, event: T) -> Result<(), String> {
-        self.event_sender().push_custom_event(event)
+    pub fn push_custom_event<T: ::std::any::Any>(&self, event: T, storage: &mut CustomEventStorage<T>) -> Result<(), String> {
+        self.event_sender().push_custom_event(event, storage)
     }
 
     /// Create an event sender that can be sent to other threads.
@@ -2032,11 +2070,11 @@ impl Event {
         }
     }
 
-    pub fn as_user_event_type<T: ::std::any::Any>(&self) -> Option<T> {
+    pub fn as_user_event_type<T: ::std::any::Any>(&self, storage: &mut CustomEventStorage<T>) -> Option<T> {
         use std::any::TypeId;
         let type_id = TypeId::of::<Box<T>>();
 
-        let (event_id, event_box_ptr) = match *self {
+        let (event_id, event_obj_id) = match *self {
             Event::User { type_, data1, .. } => (type_, data1),
             _ => return None,
         };
@@ -2054,9 +2092,32 @@ impl Event {
             return None;
         }
 
-        let event_box: Box<T> = unsafe { Box::from_raw(event_box_ptr as *mut T) };
+        storage.remove_event(event_obj_id as usize)
+    }
 
-        Some(*event_box)
+    pub fn as_user_event_type_peek<'a, T: ::std::any::Any>(&self, storage: &'a CustomEventStorage<T>) -> Option<&'a T> {
+        use std::any::TypeId;
+        let type_id = TypeId::of::<Box<T>>();
+
+        let (event_id, event_obj_id) = match *self {
+            Event::User { type_, data1, .. } => (type_, data1),
+            _ => return None,
+        };
+
+        let cet = CUSTOM_EVENT_TYPES.lock().unwrap();
+
+        let event_type_id = match cet.sdl_id_to_type_id.get(&event_id) {
+            Some(id) => id,
+            None => {
+                panic!("internal error; could not find typeid")
+            }
+        };
+
+        if &type_id != event_type_id {
+            return None;
+        }
+
+        storage.peek_event(event_obj_id as usize)
     }
 
     /// Returns `true` if they are the same "kind" of events.
@@ -3146,7 +3207,7 @@ impl EventSender {
     ///     assert_eq!(e2.a, 42);
     /// }
     /// ```
-    pub fn push_custom_event<T: ::std::any::Any>(&self, event: T) -> Result<(), String> {
+    pub fn push_custom_event<T: ::std::any::Any>(&self, event: T, storage: &mut CustomEventStorage<T>) -> Result<(), String> {
         use std::any::TypeId;
         let cet = CUSTOM_EVENT_TYPES.lock().unwrap();
         let type_id = TypeId::of::<Box<T>>();
@@ -3158,13 +3219,14 @@ impl EventSender {
             }
         };
 
-        let event_box = Box::new(event);
+        let event_obj_idx = storage.add_event(event);
+
         let event = Event::User {
             timestamp: 0,
             window_id: 0,
             type_: user_event_id,
             code: 0,
-            data1: Box::into_raw(event_box) as *mut c_void,
+            data1: event_obj_idx as *mut c_void,
             data2: ::std::ptr::null_mut(),
         };
         drop(cet);

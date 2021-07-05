@@ -60,6 +60,9 @@ static-link = ["sdl2-sys/static-link"]
 features = ["default", "gfx", "mixer", "image", "ttf"]
 
 [[example]]
+name = "custom_user_event"
+
+[[example]]
 name = "animation"
 
 [[example]]
