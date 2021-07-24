@@ -220,7 +220,7 @@ impl crate::EventSubsystem {
         use std::any::TypeId;
         let event_id = *(unsafe { self.register_events(1) })?.first().unwrap();
         let mut cet = CUSTOM_EVENT_TYPES.lock().unwrap();
-        let type_id = TypeId::of::<Box<T>>();
+        let type_id = TypeId::of::<T>();
 
         if cet.type_id_to_sdl_id.contains_key(&type_id) {
             return Err("The same event type can not be registered twice!".to_owned());
@@ -2072,7 +2072,7 @@ impl Event {
 
     pub fn as_user_event_type<T: ::std::any::Any>(&self, storage: &mut CustomEventStorage<T>) -> Option<T> {
         use std::any::TypeId;
-        let type_id = TypeId::of::<Box<T>>();
+        let type_id = TypeId::of::<T>();
 
         let (event_id, event_obj_id) = match *self {
             Event::User { type_, data1, .. } => (type_, data1),
@@ -2097,7 +2097,7 @@ impl Event {
 
     pub fn as_user_event_type_peek<'a, T: ::std::any::Any>(&self, storage: &'a CustomEventStorage<T>) -> Option<&'a T> {
         use std::any::TypeId;
-        let type_id = TypeId::of::<Box<T>>();
+        let type_id = TypeId::of::<T>();
 
         let (event_id, event_obj_id) = match *self {
             Event::User { type_, data1, .. } => (type_, data1),
@@ -3210,7 +3210,7 @@ impl EventSender {
     pub fn push_custom_event<T: ::std::any::Any>(&self, event: T, storage: &mut CustomEventStorage<T>) -> Result<(), String> {
         use std::any::TypeId;
         let cet = CUSTOM_EVENT_TYPES.lock().unwrap();
-        let type_id = TypeId::of::<Box<T>>();
+        let type_id = TypeId::of::<T>();
 
         let user_event_id = *match cet.type_id_to_sdl_id.get(&type_id) {
             Some(id) => id,
