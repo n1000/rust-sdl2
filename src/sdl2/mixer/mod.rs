@@ -33,6 +33,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::path::Path;
 use std::str::from_utf8;
+use std::sync::atomic::{AtomicBool, Ordering};
 use sys;
 use sys::mixer;
 use version::Version;
@@ -131,12 +132,21 @@ impl ToString for InitFlag {
     }
 }
 
+/// Only one Sdl Mixer context can be alive at a time.
+/// Set to false by default (not alive).
+static IS_SDL_MIXER_CONTEXT_ALIVE: AtomicBool = AtomicBool::new(false);
+
 /// Context manager for `sdl2_mixer` to manage init and quit
-pub struct Sdl2MixerContext;
+pub struct Sdl2MixerContext {
+    _private: (),
+}
 
 /// Cleans up all dynamically loaded library handles, freeing memory.
 impl Drop for Sdl2MixerContext {
     fn drop(&mut self) {
+        let was_alive = IS_SDL_MIXER_CONTEXT_ALIVE.swap(false, Ordering::Relaxed);
+        assert!(was_alive);
+
         unsafe {
             mixer::Mix_Quit();
         }
@@ -146,13 +156,22 @@ impl Drop for Sdl2MixerContext {
 /// Loads dynamic libraries and prepares them for use.  Flags should be
 /// one or more flags from `InitFlag`.
 pub fn init(flags: InitFlag) -> Result<Sdl2MixerContext, String> {
+    // Atomically switch the `IS_SDL_MIXER_CONTEXT_ALIVE` global to true
+    let was_alive = IS_SDL_MIXER_CONTEXT_ALIVE.swap(true, Ordering::Relaxed);
+
+    // It is an error to call the init function more than once.  If the user only wants to add
+    // initial capabilities, they should use init_add().
+    if was_alive {
+        return Err("Mixer may only be initialized once.".to_string());
+    }
+
     let return_flags = unsafe {
         let ret = mixer::Mix_Init(flags.bits() as c_int);
         InitFlag::from_bits_truncate(ret as u32)
     };
     // Check if all init flags were set
-    if flags.intersects(return_flags) {
-        Ok(Sdl2MixerContext)
+    if return_flags.contains(flags) {
+        Ok(Sdl2MixerContext { _private: () })
     } else {
         // Flags not matching won't always set the error message text
         // according to sdl docs
@@ -161,7 +180,37 @@ pub fn init(flags: InitFlag) -> Result<Sdl2MixerContext, String> {
             let error_str = &("Could not init: ".to_string() + &un_init_flags.to_string());
             let _ = ::set_error(error_str);
         }
+
+        // Initialization failed.
+        IS_SDL_MIXER_CONTEXT_ALIVE.swap(false, Ordering::Relaxed);
+
         Err(get_error())
+    }
+}
+
+impl Sdl2MixerContext {
+    /// Loads additional dynamic libraries and prepares them for use.  Flags should be
+    /// one or more flags from `InitFlag`.
+    pub fn init_add(&self, flags: InitFlag) -> Result<(), String> {
+        let return_flags = unsafe {
+            let ret = mixer::Mix_Init(flags.bits() as c_int);
+            InitFlag::from_bits_truncate(ret as u32)
+        };
+
+        // Check if all init flags were set
+        if return_flags.contains(flags) {
+            Ok(())
+        } else {
+            // Flags not matching won't always set the error message text
+            // according to sdl docs
+            if get_error() == "" {
+                let un_init_flags = return_flags ^ flags;
+                let error_str = &("Could not init: ".to_string() + &un_init_flags.to_string());
+                let _ = ::set_error(error_str);
+            }
+
+            Err(get_error())
+        }
     }
 }
 
@@ -782,7 +831,10 @@ impl<'a> fmt::Debug for Music<'a> {
 
 impl<'a> Music<'a> {
     /// Load music file to use.
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Music<'static>, String> {
+    pub fn from_file<P: AsRef<Path>>(
+        path: P,
+        _ctxt: &'a Sdl2MixerContext,
+    ) -> Result<Music<'a>, String> {
         let raw = unsafe {
             let c_path = CString::new(path.as_ref().to_str().unwrap()).unwrap();
             mixer::Mix_LoadMUS(c_path.as_ptr())
@@ -800,7 +852,10 @@ impl<'a> Music<'a> {
 
     /// Load music from a static byte buffer.
     #[doc(alias = "SDL_RWFromConstMem")]
-    pub fn from_static_bytes(buf: &'static [u8]) -> Result<Music<'static>, String> {
+    pub fn from_static_bytes(
+        buf: &'static [u8],
+        _ctxt: &'a Sdl2MixerContext,
+    ) -> Result<Music<'a>, String> {
         let rw =
             unsafe { sys::SDL_RWFromConstMem(buf.as_ptr() as *const c_void, buf.len() as c_int) };
 
