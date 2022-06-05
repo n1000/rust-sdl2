@@ -108,13 +108,15 @@ struct SomeEventTypeTest4 {
 }
 
 fn test4(ev: &sdl2::EventSubsystem, ep: &mut sdl2::EventPump) {
+    let mut cust_event_storage = sdl2::event::CustomEventStorage::new();
+
     ev.register_custom_event::<SomeEventTypeTest4>().unwrap();
     let event = SomeEventTypeTest4 { a: 42 };
-    ev.push_custom_event(event).unwrap();
+    ev.push_custom_event(event, &mut cust_event_storage).unwrap();
 
     let received = ep.poll_event().unwrap();
     if received.is_user_event() {
-        let e2 = received.as_user_event_type::<SomeEventTypeTest4>().unwrap();
+        let e2 = received.as_user_event_type::<SomeEventTypeTest4>(&mut cust_event_storage).unwrap();
         assert_eq!(e2.a, 42);
     }
 }
